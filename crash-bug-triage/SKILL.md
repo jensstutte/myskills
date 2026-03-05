@@ -16,7 +16,16 @@ allowed-tools:
 
 Triage crash bugs for: $ARGUMENTS
 
-See [component-groups.md](../../projects/-home-jens-src-firefox/memory/component-groups.md) for mapping friendly names to Bugzilla component lists.
+## Resolving Component Groups
+
+If $ARGUMENTS is a team name (e.g. "OS Integration") rather than explicit component names, fetch the components from Bugzilla:
+
+```bash
+curl -s 'https://bugzilla.mozilla.org/rest/product?type=enterable&include_fields=name,components.name,components.team_name,components.is_active' \
+  | jq -r --arg team "TEAM_NAME" '[.products[] | .name as $prod | .components[] | select(.is_active) | select(.team_name == $team) | $prod + "::" + .name] | .[]'
+```
+
+This uses the `team_name` field on Bugzilla components. Use case-sensitive matching first; if no results, try case-insensitive.
 
 ## Goal
 
