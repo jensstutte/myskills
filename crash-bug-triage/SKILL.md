@@ -48,7 +48,9 @@ curl -s 'https://bugzilla.mozilla.org/rest/bug?resolution=---&j_top=OR&f1=keywor
 
 Run one query per product/component pair. Collect all results, deduplicate by bug ID.
 
-Present the list to the user as a table: bug number, summary (truncated), signature count, severity, age. Then wait for the user to pick bugs (by number) or confirm "all" — unless `all` was already in $ARGUMENTS.
+When sorting by "oldest" or selecting stale bugs, use `last_change_time` to skip bugs with recent meaningful activity (within ~4 months). A bot comment updating keywords or volume stats doesn't count as meaningful — look for human comments with actual analysis. Bugs where a domain expert recently investigated the crash are low-value triage targets; prioritize bugs that have been dormant longer.
+
+Present the list to the user as a table: bug number, summary (truncated), signature count, severity, age, last meaningful human comment date. Then wait for the user to pick bugs (by number) or confirm "all" — unless `all` was already in $ARGUMENTS.
 
 ## Per-Bug Triage
 
@@ -102,14 +104,19 @@ For each selected bug, spawn a separate Agent (subagent_type: "general-purpose")
 > **Step 7 — Related intermittents**
 > Search Bugzilla for intermittent bugs mentioning the same signature.
 >
-> **Step 8 — Generic signature check**
-> If the signature is active, check if it groups unrelated crashes:
-> - Top frame is a templated wrapper, ref-counting method, or infrastructure function
-> - Crashes come from many different callers/subsystems
+> **Step 8 — Examine individual crashes for low-volume signatures**
+> For signatures with fewer than ~20 crashes in 90 days, fetch several individual crash reports (`socorro-cli crash CRASH_ID`) and examine the actual stacks. Do not rely solely on facet-level metadata (platform, version, crash reason). Check:
+> - Do all crashes hit the same call site (same frame #0 / proto_signature), or do they have genuinely different stacks?
+> - What is actually being dereferenced at the crash point?
 >
-> If so, check https://github.com/mozilla-services/socorro/blob/main/socorro/signature/siglists/prefix_signature_re.txt to see if the function is already listed. If not, recommend filing a Socorro prefix bug. Do NOT recommend closing the crash bug — make it depend on the prefix bug.
+> This distinguishes two very different situations:
+> - **Bucket signature**: A generic infrastructure function (template wrapper, ref-counting method, QI dispatch) that appears at different positions in different stacks, grouping truly unrelated crashes. These benefit from Socorro prefix bugs.
+> - **Canary site**: All crashes hit the exact same code path, but the crash addresses and corruption patterns vary. This means the crash site is the first dereference that exposes earlier corruption — the root causes are different but the manifestation point is the same. These do NOT benefit from prefix bugs (there is no more specific frame above).
 >
-> **Step 9 — Congruence check (actionable bugs only)**
+> **Step 9 — Generic/bucket signature check**
+> If step 8 identified a bucket signature (different stacks landing in a generic function), check https://github.com/mozilla-services/socorro/blob/main/socorro/signature/siglists/prefix_signature_re.txt to see if the function is already listed. If not, recommend filing a Socorro prefix bug. Do NOT recommend closing the crash bug — make it depend on the prefix bug.
+>
+> **Step 10 — Congruence check (actionable bugs only)**
 > Compare bug metadata against actual crash data:
 > - **Missing cf_crash_signature**: Bug has the crash keyword but `cf_crash_signature` is empty. If you found active signatures in earlier steps, flag this — the signature field should be populated.
 > - **Missing crash keyword**: Bug has `cf_crash_signature` set but no crash keyword. Flag for adding the keyword.
@@ -120,8 +127,8 @@ For each selected bug, spawn a separate Agent (subagent_type: "general-purpose")
 >
 > Use `socorro-cli search --signature "..." --days 90` with `--facet platform`, `--facet version`, `--facet platform_version`.
 >
-> **Step 10 — Read comment history**
-> Always read the bug's comments before deciding. Domain experts may have left analysis or context.
+> **Step 11 — Read comment history thoroughly**
+> Read ALL comments in the bug before making your assessment. This is critical — domain experts often leave detailed technical analysis, identify root causes, or explain why earlier spikes happened. Your triage comment should build on and reference their findings (e.g. "As nika noted in comment 10, ...") rather than re-derive conclusions from scratch. If an expert already analyzed the crash mechanism, incorporate their framing. Ignoring existing analysis leads to superficial or incorrect assessments.
 >
 > **Actionability criteria** — a bug is actionable if ANY of:
 > 1. Active crashes on supported versions
@@ -195,6 +202,7 @@ After all agents complete:
    - Use `bug NNNNNN` for bugzilla cross-references (auto-linked by bugzilla)
    - Tone: factual, slightly hedging where evidence isn't conclusive ("seems", "appears")
    - Say "installs" not "users" when referring to crash sources
+   - Reference and build on existing expert analysis from bug comments (e.g. "As nika noted in comment 10, ...") rather than presenting findings as entirely new
    - Include: crash volume (90d) with version/platform breakdown, Socorro bug associations and status, code existence with searchfox permalinks, congruence notes if actionable, recommendation
 
 ### Output
