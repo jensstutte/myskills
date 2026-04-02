@@ -52,11 +52,23 @@ When sorting by "oldest" or selecting stale bugs, use `last_change_time` to skip
 
 Present the list to the user as a table: bug number, summary (truncated), signature count, severity, age, last meaningful human comment date. Then wait for the user to pick bugs (by number) or confirm "all" — unless `all` was already in $ARGUMENTS.
 
+## Pre-flight: Verify crash-analysis skill
+
+Before spawning any triage agents, verify that the crash-analysis skill file exists. Use Glob to find it:
+
+```
+~/.claude/skills/crash-analysis/SKILL.md
+```
+
+If not found, try `~/.claude/skills/**/SKILL.md` to locate all skill files and look for one named `crash-analysis`. If still not found, ask the user for the path to the crash-analysis skill directory.
+
+Store the resolved absolute path — the per-bug agents will need it to read the Phase 1 instructions.
+
 ## Per-Bug Triage
 
 If more than 10 bugs are selected, ask the user to confirm before proceeding. Suggest triaging the first 10 (e.g. oldest, or highest severity) and offer to continue with the rest afterward.
 
-For each selected bug, spawn a separate Agent (subagent_type: "general-purpose") to triage it in parallel. Each agent receives the full per-bug prompt below, with the bug number filled in.
+For each selected bug, spawn a separate Agent (subagent_type: "general-purpose") to triage it in parallel. Each agent receives the full per-bug prompt below, with the bug number filled in and `{CRASH_ANALYSIS_SKILL_DIR}` replaced with the resolved absolute path from the pre-flight step.
 
 ### Per-Bug Agent Prompt
 
@@ -74,21 +86,28 @@ For each selected bug, spawn a separate Agent (subagent_type: "general-purpose")
 > - Query the Socorro Bugs API (`socorro-cli bugs --bug-id {BUG_NUMBER}`) to find signatures already associated with this bug.
 > - If a crash ID is found, fetch it with `socorro-cli crash CRASH_ID` to get the full signature.
 >
-> **Step 3 — Check crash volume (90 days)**
-> For each signature, you MUST check BOTH data sources — crash reports (opt-in) and crash pings (opt-out, representative). Neither alone gives the full picture: reports have detail but under-count, pings are representative but lack ESR and detail.
->
-> Crash reports:
-> ```bash
-> socorro-cli search --signature "SIGNATURE" --days 90
-> ```
->
-> Crash pings (always run this, even if reports show volume):
-> ```bash
-> total=0; for i in $(seq 0 89); do d=$(date -d "today - ${i} days" +%Y-%m-%d); result=$(socorro-cli crash-pings --signature "SIG" --date "$d" 2>&1); count=$(echo "$result" | grep -oP '\((\d+) pings?\)' | grep -oP '\d+'); if [ -n "$count" ] && [ "$count" -gt 0 ]; then echo "$d: $count pings"; total=$((total + count)); fi; done; echo "Total: $total"
-> ```
+> **Step 3 — Crash analysis (Phase 1 triage)**
+> This is the most important step — it provides the crash data that drives the entire assessment.
+> Read `{CRASH_ANALYSIS_SKILL_DIR}/SKILL.md` and follow **Phase 1** (steps 1a through 1e) for each signature. Also read `crash-patterns.md` and `lessons.md` in the same directory for pattern recognition and pitfalls.
 >
 > **Caveat**: Crash pings do not include ESR builds. Check the version facet in Socorro reports before concluding volume is negligible based on pings alone.
-> Report both numbers in the output — never omit one because the other showed results.
+> Report both opt-in report counts and crash ping counts — never omit one because the other showed results.
+>
+> **Step 3b — Supported version check**
+> Fetch current supported Firefox versions:
+> ```bash
+> for ch in release beta nightly esr; do
+>   v=$(curl -s "https://whattrainisitnow.com/api/release/schedule/?version=$ch" | jq -r '.version')
+>   echo "$ch: $v"
+> done
+> ```
+> Cross-reference the version facet from step 3 against these. Classify crash volume:
+> - **Supported**: crashes on current release, beta, nightly, or current ESR (e.g. 140.x ESR) — fully actionable
+> - **Previous release**: one or two versions behind current release (e.g. 148 when 149 is current) — still relevant, likely affects current too
+> - **Old ESR**: crashes on previous ESR cycle (e.g. ESR 115 when ESR 140 is current) — lower concern, especially if ESR 115 is approaching EOL. Note this in the assessment.
+> - **Ancient**: crashes only on versions many releases behind (e.g. Fx 120 when 149 is current) — likely not actionable unless code hasn't changed
+>
+> If ALL crashes are on old/ancient versions and none on supported versions, this significantly reduces actionability. Conversely, a rare crash that appears on 149 is likely also possible on 150 — don't dismiss low volume on current versions.
 >
 > **Step 4 — Similar signatures**
 > If no hits, search for similar signatures in Socorro.
@@ -108,10 +127,19 @@ For each selected bug, spawn a separate Agent (subagent_type: "general-purpose")
 > For signatures with fewer than ~20 crashes in 90 days, fetch several individual crash reports (`socorro-cli crash CRASH_ID`) and examine the actual stacks. Do not rely solely on facet-level metadata (platform, version, crash reason). Check:
 > - Do all crashes hit the same call site (same frame #0 / proto_signature), or do they have genuinely different stacks?
 > - What is actually being dereferenced at the crash point?
+> - Are faulting addresses consistent (same bug) or scattered/patterned (hardware corruption)?
+>   - `0xffffffff`, `0xfffffffe` → bitflip-of-NULL patterns
+>   - `0xe5e5e5e5e5e5e5e5` → mozjemalloc freed memory (kAllocPoison) — **confirms UAF**
+>   - `0x4b4b4b4b4b4b4b4b` → jemalloc poison — **confirms UAF**
+>   - Small offsets from poison values (e.g. `0xe5e5e5e5e5e5e5ed`) → UAF with vtable offset
+>   - Bit 31 set on otherwise valid user-mode pointer → single-bit flip
+>   - Diverse random addresses with consistent crash reason → use-after-free (freed memory reused with different content each time)
+>   - Diverse random addresses with diverse crash reasons → hardware corruption
 >
-> This distinguishes two very different situations:
+> This distinguishes three very different situations:
 > - **Bucket signature**: A generic infrastructure function (template wrapper, ref-counting method, QI dispatch) that appears at different positions in different stacks, grouping truly unrelated crashes. These benefit from Socorro prefix bugs.
 > - **Canary site**: All crashes hit the exact same code path, but the crash addresses and corruption patterns vary. This means the crash site is the first dereference that exposes earlier corruption — the root causes are different but the manifestation point is the same. These do NOT benefit from prefix bugs (there is no more specific frame above).
+> - **Hardware/external corruption**: Diverse crash reasons (EXEC, READ, WRITE, ILLEGAL, PRIV, STACK_COOKIE) at the same code location, third-party modules in proto_signatures, bitflip address patterns. Not a Firefox code bug.
 >
 > **Step 9 — Generic/bucket signature check**
 > If step 8 identified a bucket signature (different stacks landing in a generic function), check https://github.com/mozilla-services/socorro/blob/main/socorro/signature/siglists/prefix_signature_re.txt to see if the function is already listed. If not, recommend filing a Socorro prefix bug. Do NOT recommend closing the crash bug — make it depend on the prefix bug.
@@ -120,6 +148,11 @@ For each selected bug, spawn a separate Agent (subagent_type: "general-purpose")
 > Compare bug metadata against actual crash data:
 > - **Missing cf_crash_signature**: Bug has the crash keyword but `cf_crash_signature` is empty. If you found active signatures in earlier steps, flag this — the signature field should be populated.
 > - **Missing crash keyword**: Bug has `cf_crash_signature` set but no crash keyword. Flag for adding the keyword.
+> - **UAF on non-sec bug**: If crash data shows use-after-free indicators (poison addresses, CFG violations, diverse faulting addresses with consistent READ reason) and the bug is NOT security-restricted (i.e. publicly visible), flag this prominently. UAF bugs are potentially exploitable and may need sec-rating and access restriction. Indicators to check:
+>   - Faulting addresses matching `0xe5e5e5e5*` (kAllocPoison) or `0x4b4b4b4b*` (jemalloc poison)
+>   - Any `FAST_FAIL_GUARD_ICALL_CHECK_FAILURE` in the reason facet (CFG caught a vtable call on freed memory)
+>   - Consistent crash reason (ACCESS_VIOLATION_READ) but widely scattered faulting addresses (freed memory reused with different content)
+>   - Disassembly showing a vtable dispatch (`call [reg]` or `call [reg+offset]`) at the crash point
 > - Platform/OS drift (bug says macOS-only but crashes now on Linux too?)
 > - Affected versions (filed against Fx57 but crashes on 147+?)
 > - Summary/description accuracy
@@ -156,6 +189,19 @@ For each selected bug, spawn a separate Agent (subagent_type: "general-purpose")
 > ### Volume Breakdown
 > - Platforms: Windows 78%, Linux 15%, macOS 7%
 > - Versions: 136 (40%), 137 (55%), ESR 128 (5%)
+> - Supported versions: {yes — N crashes on current release/beta/ESR | no — all crashes on EOL versions}
+>
+> ### Crash Reason Breakdown
+> - ACCESS_VIOLATION_READ (58), STATUS_HEAP_CORRUPTION (26), etc.
+> - Assessment: single bug / diverse root causes / hardware corruption
+>
+> ### Proto_signature Clusters
+> - cluster 1 (N crashes): brief description of code path
+> - cluster 2 (N crashes): brief description
+> - scattered (N crashes): no common pattern
+>
+> ### Third-party Module Involvement
+> - igd10iumd64.dll (Intel GPU, N crashes) / none detected
 >
 > ### Code Status
 > - `SomeClass::Method` — still exists ({searchfox permalink})
@@ -174,6 +220,10 @@ For each selected bug, spawn a separate Agent (subagent_type: "general-purpose")
 > - Severity S4 but 342 crashes/90d — mismatch
 > - Bug says macOS-only, now mostly Windows
 >
+> ### Security
+> - **UAF on public bug**: yes/no. If yes: list evidence (poison addresses, CFG violations, scattered faulting addresses). Flag that bug may need sec-rating and access restriction.
+> - If no UAF indicators found, omit this section.
+>
 > ### Comment History Notes
 > - Comment 5: domain expert said "likely fixed by bug NNNNNN"
 >
@@ -181,6 +231,7 @@ For each selected bug, spawn a separate Agent (subagent_type: "general-purpose")
 > - Actionable: yes/no
 > - Reason: {which criteria matched, or why none did}
 > - Recommendation: {close WONTFIX, close INCOMPLETE, update metadata, keep open, etc.}
+> - **If UAF detected on public bug**: recommend sec-rating assessment regardless of other actionability determination. A non-actionable UAF (e.g. code removed) is fine to close, but an actionable UAF on a public bug should be flagged urgently.
 > ```
 
 ## Collecting Results and Writing Comments
