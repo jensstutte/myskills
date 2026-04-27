@@ -252,9 +252,11 @@ After all agents complete:
    - Use markdown links to searchfox for source references (permalink URLs from agent findings)
    - Use `bug NNNNNN` for bugzilla cross-references (auto-linked by bugzilla)
    - Tone: factual, slightly hedging where evidence isn't conclusive ("seems", "appears")
+   - **Write recommendations, not decisions.** Say "this seems like a candidate for WORKSFORME" or "suggesting to close as WONTFIX" — never "Closing as ..." or other language that implies the action is being taken. The comment presents findings and a recommendation; the bug owner decides.
    - Say "installs" not "users" when referring to crash sources
    - Reference and build on existing expert analysis from bug comments (e.g. "As nika noted in comment 10, ...") rather than presenting findings as entirely new
    - Include: crash volume (90d) with version/platform breakdown, Socorro bug associations and status, code existence with searchfox permalinks, congruence notes if actionable, recommendation
+   - **Security-sensitive details in draft comments**: If the agent found UAF indicators (poison addresses, CFG violations, scattered faulting addresses), include them in the structured findings for the user's review, but **do NOT include specific exploitation-relevant details** (poison values, CFG failure counts, faulting address patterns) in the draft bugzilla comment for public bugs. Instead, note generically that "the crash pattern suggests use-after-free" and flag to the user that the comment omits security details that should only go on a restricted bug. The user can decide whether to request sec-rating before posting.
 
 ### Output
 
