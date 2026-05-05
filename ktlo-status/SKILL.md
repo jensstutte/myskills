@@ -52,7 +52,7 @@ Use the Firefox DevTools MCP with the persistent profile:
 ```
 restart_firefox:
   firefoxPath: /usr/bin/firefox-nightly
-  profilePath: /home/jens/.firefox-mcp-profile
+  profilePath: ~/.firefox-mcp-profile
   startUrl: <constructed URL>
 ```
 
