@@ -25,33 +25,38 @@ Given a Jira ticket key (e.g. `FFXP-3811`):
 
 ## Setting up `~/.firefox-mcp-profile` for BugDash
 
-BugDash (`https://bugdash.moz.tools/`) requires Mozilla SSO. The MCP launches
-Firefox in a way that does not interactively prompt, so the profile must
-already hold a valid BugDash session.
+BugDash (`https://bugdash.moz.tools/`) authenticates via a **Bugzilla API key**
+that it stores in the browser's local storage. The MCP launches Firefox
+non-interactively, so the profile must already have the key configured.
 
 One-time setup:
 
-1. Create an empty profile directory if it doesn't already exist:
+1. Create a Bugzilla API key at
+   <https://bugzilla.mozilla.org/userprefs.cgi?tab=apikey>. Give it a
+   descriptive name (e.g. "bugdash mcp profile").
+
+2. Create an empty profile directory if it doesn't already exist:
 
    ```sh
    mkdir -p ~/.firefox-mcp-profile
    ```
 
-2. Launch Firefox Nightly **manually** against that profile and complete the
-   SSO flow once:
+3. Launch Firefox Nightly **manually** against that profile, open BugDash,
+   and paste the API key into BugDash's settings:
 
    ```sh
    /usr/bin/firefox-nightly --profile ~/.firefox-mcp-profile --no-remote https://bugdash.moz.tools/
    ```
 
-   - Sign in via Mozilla SSO when prompted.
-   - Wait for the BugDash overview to render so the auth handshake completes.
-   - Close Firefox cleanly so cookies/storage are flushed to disk.
+   - Open the BugDash settings (the key icon in the top-right corner).
+   - Paste the Bugzilla API key.
+   - Confirm a query loads (e.g. open the Overview tab on a known component).
+   - Close Firefox cleanly so local storage is flushed to disk.
 
-3. From this point on, the MCP can launch Firefox against the same profile and
-   BugDash will load already-authenticated. The skill will not work if this
-   profile is missing or the BugDash session has expired — re-run step 2 if
-   you start seeing the SSO/login screen in screenshots.
+4. From this point on, the MCP can launch Firefox against the same profile and
+   BugDash will use the stored key automatically. If the skill starts
+   returning empty/loading screens, the API key has likely been revoked —
+   regenerate at the Bugzilla URL above and repeat step 3.
 
 ## Bugzilla component name gotchas
 
