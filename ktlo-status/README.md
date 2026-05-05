@@ -60,15 +60,10 @@ One-time setup:
 
 ## Bugzilla component name gotchas
 
-A few component names in Jira ticket descriptions don't match Bugzilla
-exactly. The skill tolerates these by retrying with the correct name once
-seen, but it's worth knowing:
-
-- "Core: Widget: Windows" in tickets → actually `Core: Widget: Win32`
-- "Core: Widget: GTK" in tickets → actually `Core: Widget: Gtk`
-- "Core: Hardware Abstraction Layer" → actually `Core: Hardware Abstraction Layer (HAL)`
-
-The Bugzilla REST API can be queried for the canonical list:
+Component names in Jira ticket descriptions don't always match Bugzilla
+exactly (case, suffixes, abbreviations). When the BugDash URL fails to
+auto-select a component, query the Bugzilla REST API for the canonical
+name:
 
 ```sh
 curl -s 'https://bugzilla.mozilla.org/rest/product?names=Core&include_fields=components.name,components.team_name' | jq
